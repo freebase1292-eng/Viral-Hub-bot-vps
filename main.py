@@ -138,6 +138,12 @@ async def init_application():
     except Exception as cmd_err:
         logger.warning(f"Failed to set scoped commands: {cmd_err}")
 
+    try:
+        from bot import start_alert_worker_if_needed
+        start_alert_worker_if_needed(ptb_app.bot)
+    except Exception as worker_err:
+        logger.warning(f"Failed to start alert worker: {worker_err}")
+
     logger.info("✅ Shared Application initialized successfully.")
 
 

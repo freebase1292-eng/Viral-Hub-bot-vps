@@ -16,7 +16,7 @@ from telegram import (
 )
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
-from telegram.error import BadRequest
+from telegram.error import BadRequest, TelegramError
 
 from db import (
     Session, User, Analytics, Content, Broadcast,
@@ -27,6 +27,107 @@ logger = logging.getLogger(__name__)
 
 # Admin Telegram User ID — only this user can access admin functions
 ADMIN_TELEGRAM_ID = int(os.environ.get("ADMIN_TELEGRAM_ID", "8756082851"))
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ASYNCHRONOUS ADMIN ALERT QUEUE (Zero latency for users, no 429 flood)
+# ══════════════════════════════════════════════════════════════════════
+
+_alert_queue: asyncio.Queue = None
+_alert_worker_task = None
+
+
+def queue_admin_join_alert(user_tg):
+    """Enqueues an alert instantly in 0.0001ms without blocking the user."""
+    global _alert_queue
+    if not ADMIN_TELEGRAM_ID:
+        return
+    if _alert_queue is None:
+        _alert_queue = asyncio.Queue()
+    name_str = f"{user_tg.first_name or ''} {user_tg.last_name or ''}".strip() or "Unknown"
+    username_str = f"@{user_tg.username}" if user_tg.username else "—"
+    try:
+        _alert_queue.put_nowait({
+            "id": user_tg.id,
+            "name": name_str,
+            "username": username_str
+        })
+    except Exception:
+        pass
+
+
+def start_alert_worker_if_needed(bot):
+    """Starts the background worker that safely batches and delivers alerts."""
+    global _alert_queue, _alert_worker_task
+    if _alert_queue is None:
+        _alert_queue = asyncio.Queue()
+    if _alert_worker_task is None or _alert_worker_task.done():
+        try:
+            loop = asyncio.get_running_loop()
+            _alert_worker_task = loop.create_task(_alert_worker_loop(bot))
+        except RuntimeError:
+            pass
+
+
+async def _alert_worker_loop(bot):
+    """
+    Background daemon: Delivers alerts to admin safely while:
+    1. Never delaying user messages (0ms delay for users).
+    2. Auto-grouping into surges during viral spikes (prevents 429 flood).
+    3. Respecting Telegram's 1 msg/sec rate limit.
+    """
+    while True:
+        try:
+            first_user = await _alert_queue.get()
+            batch = [first_user]
+
+            # Brief window to gather concurrent viral joins
+            await asyncio.sleep(1.2)
+            while not _alert_queue.empty():
+                try:
+                    batch.append(_alert_queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+
+            if not ADMIN_TELEGRAM_ID:
+                continue
+
+            if len(batch) == 1:
+                u = batch[0]
+                text = (
+                    f"🆕 *New User*\n\n"
+                    f"👤 Name: *{u['name']}*\n"
+                    f"🆔 ID: `{u['id']}`\n"
+                    f"📛 Username: {u['username']}"
+                )
+            else:
+                lines = [f"⚡ *Surge: {len(batch)} New Users Joined!*", ""]
+                for u in batch[:12]:
+                    lines.append(f"• *{u['name']}* (`{u['id']}`) {u['username']}")
+                if len(batch) > 12:
+                    lines.append(f"• ... and {len(batch) - 12} more!")
+                text = "\n".join(lines)
+
+            try:
+                await bot.send_message(
+                    chat_id=ADMIN_TELEGRAM_ID,
+                    text=text,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except TelegramError as te:
+                if "retry after" in str(te).lower():
+                    await asyncio.sleep(3.0)
+                else:
+                    logger.warning(f"Could not send admin alert: {te}")
+
+            # Safe spacing to stay well below Telegram chat rate limits
+            await asyncio.sleep(1.0)
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Error in alert worker: {e}")
+            await asyncio.sleep(2.0)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -461,26 +562,10 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             track_daily_join()
             session.flush()
 
-            # Safe non-blocking log notification to Admin (does not freeze user /start)
-            enable_join_alerts = os.environ.get("ENABLE_JOIN_ALERTS", "false").lower() == "true"
-            if ADMIN_TELEGRAM_ID and enable_join_alerts:
-                async def _send_admin_alert():
-                    try:
-                        name_str = f"{user_tg.first_name or ''} {user_tg.last_name or ''}".strip()
-                        username_str = f"@{user_tg.username}" if user_tg.username else "—"
-                        await context.bot.send_message(
-                            chat_id=ADMIN_TELEGRAM_ID,
-                            text=(
-                                f"🆕 *New user*\n\n"
-                                f"👤 Name: *{name_str or 'Unknown'}*\n"
-                                f"🆔 ID: `{user_tg.id}`\n"
-                                f"📛 Username: {username_str}"
-                            ),
-                            parse_mode=ParseMode.MARKDOWN,
-                        )
-                    except Exception:
-                        pass
-                asyncio.create_task(_send_admin_alert())
+            # Non-blocking zero-latency admin alert (auto-batched, zero user delay)
+            if ADMIN_TELEGRAM_ID:
+                start_alert_worker_if_needed(context.bot)
+                queue_admin_join_alert(user_tg)
 
         else:
             # Returning user — update info and streak
