@@ -924,15 +924,21 @@ async def admin_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("✅ Attach APK Button", callback_data="admin_confirm_bc_yes_apk"),
-                InlineKeyboardButton("❌ No APK Button", callback_data="admin_confirm_bc_no_apk")
+                InlineKeyboardButton("📲 Send APK Directly", callback_data="admin_confirm_bc_send_apk_file"),
+                InlineKeyboardButton("🔘 Attach APK Button", callback_data="admin_confirm_bc_yes_apk")
             ],
-            [InlineKeyboardButton("❌ Cancel", callback_data="admin_cancel")]
+            [
+                InlineKeyboardButton("❌ No APK", callback_data="admin_confirm_bc_no_apk"),
+                InlineKeyboardButton("Cancel", callback_data="admin_cancel")
+            ]
         ])
 
         await message.reply_text(
             f"📢 *Broadcast {detected_label} Content Saved!*\n\n"
-            f"Do you want to attach the APK download button below this broadcast?",
+            f"Choose how to include the APK with this broadcast:\n"
+            f"• 📲 **Send APK Directly**: Sends the actual `.apk` file directly to users\n"
+            f"• 🔘 **Attach APK Button**: Adds a 'Download App' button below\n"
+            f"• ❌ **No APK**: Broadcast {detected_label} only",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=keyboard
         )
@@ -1085,6 +1091,47 @@ async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     session = Session()
 
     try:
+        # Check if admin is entering a broadcast link
+        if context.user_data.get("awaiting_broadcast_link"):
+            context.user_data.pop("awaiting_broadcast_link", None)
+            raw = text.strip()
+            if raw.lower() == "skip":
+                context.user_data["broadcast_link_url"] = None
+                context.user_data["broadcast_link_text"] = None
+            else:
+                url = raw
+                label = "🔗 Open Link"
+                if "\n" in raw:
+                    parts = raw.split("\n", 1)
+                    url = parts[0].strip()
+                    label = parts[1].strip() or "🔗 Open Link"
+                elif " | " in raw:
+                    parts = raw.split(" | ", 1)
+                    url = parts[0].strip()
+                    label = parts[1].strip() or "🔗 Open Link"
+                elif " - " in raw:
+                    parts = raw.split(" - ", 1)
+                    url = parts[0].strip()
+                    label = parts[1].strip() or "🔗 Open Link"
+                elif " " in raw and (raw.startswith("http://") or raw.startswith("https://") or raw.startswith("t.me/")):
+                    parts = raw.split(" ", 1)
+                    url = parts[0].strip()
+                    label = parts[1].strip() or "🔗 Open Link"
+
+                if not url.startswith("http://") and not url.startswith("https://"):
+                    if url.startswith("t.me/"):
+                        url = "https://" + url
+                    else:
+                        url = "https://" + url
+
+                context.user_data["broadcast_link_url"] = url
+                context.user_data["broadcast_link_text"] = label
+                await message.reply_text(f"✅ Link set: [{label}]({url})", parse_mode=ParseMode.MARKDOWN)
+
+            bc_id, bc_type = await _launch_broadcast(context, chat_id)
+            await message.reply_text(f"📲 *Broadcast #{bc_id} ({bc_type}) started in background!* Sending to users...", parse_mode=ParseMode.MARKDOWN)
+            return
+
         # Check if super admin is adding a sub-admin (via forward, paste ID, or @username)
         if context.user_data.get("awaiting_sub_admin_forward"):
             context.user_data.pop("awaiting_sub_admin_forward", None)
@@ -1182,15 +1229,21 @@ async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Attach APK Button", callback_data="admin_confirm_bc_yes_apk"),
-                    InlineKeyboardButton("❌ No APK Button", callback_data="admin_confirm_bc_no_apk")
+                    InlineKeyboardButton("📲 Send APK Directly", callback_data="admin_confirm_bc_send_apk_file"),
+                    InlineKeyboardButton("🔘 Attach APK Button", callback_data="admin_confirm_bc_yes_apk")
                 ],
-                [InlineKeyboardButton("❌ Cancel", callback_data="admin_cancel")]
+                [
+                    InlineKeyboardButton("❌ No APK", callback_data="admin_confirm_bc_no_apk"),
+                    InlineKeyboardButton("Cancel", callback_data="admin_cancel")
+                ]
             ])
 
             await message.reply_text(
                 f"📢 *Broadcast Text Content Saved!*\n\n"
-                f"Do you want to attach the APK download button below this message?",
+                f"Choose how to include the APK with this broadcast:\n"
+                f"• 📲 **Send APK Directly**: Users receive the actual `.apk` file directly\n"
+                f"• 🔘 **Attach APK Button**: Adds a 'Download App' button below\n"
+                f"• ❌ **No APK**: Broadcast text only",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=keyboard
             )
@@ -1313,26 +1366,6 @@ async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             return
 
-        # 10. Handling broadcast link URL + label
-        if context.user_data.get("awaiting_broadcast_link"):
-            if text.strip().lower() == "skip":
-                context.user_data.pop("awaiting_broadcast_link")
-                context.user_data["broadcast_link_url"] = None
-                context.user_data["broadcast_link_text"] = None
-            else:
-                lines = text.split("\n", 1)
-                url = lines[0].strip()
-                label = lines[1].strip() if len(lines) > 1 else "🔗 Open Link"
-                if not url.startswith("http"):
-                    await message.reply_text("❌ Invalid URL. Must start with http:// or https://")
-                    return
-                context.user_data.pop("awaiting_broadcast_link")
-                context.user_data["broadcast_link_url"] = url
-                context.user_data["broadcast_link_text"] = label
-            bc_id, bc_type = await _launch_broadcast(context, chat_id)
-            await message.reply_text(f"📲 *Broadcast #{bc_id} ({bc_type}) started in background!* Sending to users...", parse_mode=ParseMode.MARKDOWN)
-            return
-
     except Exception as e:
         session.rollback()
         logger.error(f"Admin text config error: {e}", exc_info=True)
@@ -1345,16 +1378,28 @@ async def _launch_broadcast(context, chat_id):
     """Build and launch a broadcast from stored context data. Returns (bc_id, bc_type)"""
     session = Session()
     try:
-        has_apk = context.user_data.pop("broadcast_has_apk", False)
+        has_apk_choice = context.user_data.pop("broadcast_has_apk", "none")
         link_url = context.user_data.pop("broadcast_link_url", None)
         link_text = context.user_data.pop("broadcast_link_text", None)
-        media_list = context.user_data.pop("awaiting_broadcast_media_list", None)
+        media_list = context.user_data.pop("saved_broadcast_media_list", None) or context.user_data.pop("awaiting_broadcast_media_list", None)
+
+        send_direct_apk = (has_apk_choice == "send_direct")
+        has_apk_button = (has_apk_choice in ("button", True))
 
         import json
         if media_list:
             bc_type = "multimedia"
             bc_file_id = None
             bc_caption = None
+            if send_direct_apk:
+                active_apk = session.query(Content).filter_by(content_type="apk", is_active=True).order_by(Content.id.desc()).first()
+                if active_apk:
+                    media_list.append({
+                        "type": "apk",
+                        "file_id": active_apk.file_id,
+                        "caption": f"📱 *{active_apk.file_name or 'App'}* v{active_apk.version or '1.0'}\n\n{active_apk.changelog or ''}".strip(),
+                        "text": ""
+                    })
             bc_text = json.dumps(media_list)
         else:
             bc_type = context.user_data.pop("broadcast_type", "text")
@@ -1362,12 +1407,34 @@ async def _launch_broadcast(context, chat_id):
             bc_caption = context.user_data.pop("broadcast_caption", None)
             bc_text = context.user_data.pop("broadcast_text", None)
 
+            if send_direct_apk:
+                active_apk = session.query(Content).filter_by(content_type="apk", is_active=True).order_by(Content.id.desc()).first()
+                if active_apk:
+                    items = []
+                    if bc_text or bc_file_id:
+                        items.append({
+                            "type": bc_type,
+                            "file_id": bc_file_id,
+                            "caption": bc_caption,
+                            "text": bc_text
+                        })
+                    items.append({
+                        "type": "apk",
+                        "file_id": active_apk.file_id,
+                        "caption": f"📱 *{active_apk.file_name or 'App'}* v{active_apk.version or '1.0'}\n\n{active_apk.changelog or ''}".strip(),
+                        "text": ""
+                    })
+                    bc_type = "multimedia"
+                    bc_file_id = None
+                    bc_caption = None
+                    bc_text = json.dumps(items)
+
         new_bc = Broadcast(
             message_type=bc_type,
             file_id=bc_file_id,
             caption=bc_caption,
             content_text=bc_text,
-            has_apk_button=has_apk,
+            has_apk_button=has_apk_button,
             apk_button_text="⬇️ Download App",
             link_url=link_url,
             link_text=link_text or "🔗 Open Link",
@@ -1760,47 +1827,63 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
             context.user_data["awaiting_broadcast_link"] = True
             await _safe_edit(
                 query,
-                "🔗 *Send the link URL and optional button label.*\n\n"
-                "Format:\n"
-                "`https://example.com\nButton Label`\n\n"
-                "Or send just `skip` to continue without a link.",
+                "🔗 *Send your link URL and optional button text:*\n\n"
+                "You can reply with any format:\n"
+                "• `https://t.me/mychannel`\n"
+                "• `https://example.com | Join Channel`\n"
+                "• Line 1: `https://example.com`\n  Line 2: `Button Title`\n\n"
+                "Or reply `skip` to continue without a link.",
                 parse_mode=ParseMode.MARKDOWN
             )
 
         elif data == "admin_confirm_bc_media_done":
-            media_list = context.user_data.get("awaiting_broadcast_media_list", [])
+            media_list = context.user_data.pop("awaiting_broadcast_media_list", [])
             if not media_list:
                 await context.bot.send_message(chat_id=chat_id, text="⚠️ No items added yet. Please send some media or text first.")
                 return
+            context.user_data["saved_broadcast_media_list"] = media_list
 
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Attach APK Button", callback_data="admin_confirm_bc_yes_apk"),
-                    InlineKeyboardButton("❌ No APK Button", callback_data="admin_confirm_bc_no_apk")
+                    InlineKeyboardButton("📲 Send APK Directly", callback_data="admin_confirm_bc_send_apk_file"),
+                    InlineKeyboardButton("🔘 Attach APK Button", callback_data="admin_confirm_bc_yes_apk")
                 ],
-                [InlineKeyboardButton("Cancel", callback_data="admin_cancel")]
+                [
+                    InlineKeyboardButton("❌ No APK", callback_data="admin_confirm_bc_no_apk"),
+                    InlineKeyboardButton("Cancel", callback_data="admin_cancel")
+                ]
             ])
             await _safe_edit(
                 query,
-                f"📊 *Multi-Media sequence contains {len(media_list)} items.*\n\nDo you want to attach the APK download button below this broadcast?",
+                f"📊 *Multi-Media sequence contains {len(media_list)} items.*\n\n"
+                f"Choose how to include the APK with this broadcast:\n"
+                f"• 📲 **Send APK Directly**: Users receive the actual `.apk` file directly\n"
+                f"• 🔘 **Attach APK Button**: Adds a 'Download App' button below\n"
+                f"• ❌ **No APK**: Broadcast media items only",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=keyboard
             )
 
-        elif data in ("admin_confirm_bc_yes_apk", "admin_confirm_bc_no_apk"):
-            has_apk = (data == "admin_confirm_bc_yes_apk")
-            context.user_data["broadcast_has_apk"] = has_apk
+        elif data in ("admin_confirm_bc_yes_apk", "admin_confirm_bc_no_apk", "admin_confirm_bc_send_apk_file"):
+            if data == "admin_confirm_bc_send_apk_file":
+                context.user_data["broadcast_has_apk"] = "send_direct"
+            elif data == "admin_confirm_bc_yes_apk":
+                context.user_data["broadcast_has_apk"] = "button"
+            else:
+                context.user_data["broadcast_has_apk"] = "none"
 
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Attach Link Button", callback_data="admin_prompt_broadcast_link"),
-                    InlineKeyboardButton("❌ No Link", callback_data="admin_confirm_bc_launch")
+                    InlineKeyboardButton("🔗 Attach Link Button", callback_data="admin_prompt_broadcast_link"),
+                    InlineKeyboardButton("🚀 Launch Now (No Link)", callback_data="admin_confirm_bc_launch")
                 ],
                 [InlineKeyboardButton("Cancel", callback_data="admin_cancel")]
             ])
             await _safe_edit(
                 query,
-                "🔗 *Do you want to attach a clickable link button to this broadcast?*",
+                "🔗 *Do you want to attach a clickable link button to this broadcast?*\n\n"
+                "• **Attach Link Button**: Adds an inline button leading to your channel/site\n"
+                "• **Launch Now**: Sends the broadcast immediately without a link",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=keyboard
             )
