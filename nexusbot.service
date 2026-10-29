@@ -1,0 +1,21 @@
+[Unit]
+Description=NexusBot High-Performance Telegram Service
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/opt/nexusbot-vps
+EnvironmentFile=/opt/nexusbot-vps/.env
+ExecStart=/opt/nexusbot-vps/venv/bin/gunicorn main:app \
+    --workers 2 \
+    --threads 4 \
+    --bind 127.0.0.1:8000 \
+    --timeout 120 \
+    --access-logfile /var/log/nexusbot_access.log \
+    --error-logfile /var/log/nexusbot_error.log
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
