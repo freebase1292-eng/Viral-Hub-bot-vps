@@ -7,9 +7,9 @@ User=root
 WorkingDirectory=/opt/nexusbot-vps
 EnvironmentFile=/opt/nexusbot-vps/.env
 ExecStart=/opt/nexusbot-vps/venv/bin/gunicorn main:app \
-    --workers 2 \
-    --threads 4 \
-    --bind 127.0.0.1:8000 \
+    --workers 1 \
+    --threads 8 \
+    --bind 0.0.0.0:8000 \
     --timeout 120 \
     --access-logfile /var/log/nexusbot_access.log \
     --error-logfile /var/log/nexusbot_error.log
